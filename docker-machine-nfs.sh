@@ -54,10 +54,15 @@ Usage: $0 <machine-name> [options]
 
 Options:
 
+  -n, --nfs-config          NFS configuration to use in exports file.
+                              (default to '-alldirs -mapall=\$(id -u):\$(id -g)')
+  -s, --shared-folder       Folder to share
+                              (default to /Users)
+  -m, --mount-opts          NFS mount options
+                              (default to 'noacl,async')
+  -e, --exports             Exports file to use
+                              (default to /etc/exports)
   -f, --force               Force reconfiguration of nfs
-  -n, --nfs-config          NFS configuration to use in /etc/exports. (default to '-alldirs -mapall=\$(id -u):\$(id -g)')
-  -s, --shared-folder,...   Folder to share (default to /Users)
-  -m, --mount-opts          NFS mount options (default to 'noacl,async')
 
 Examples:
 
@@ -128,8 +133,10 @@ setPropDefaults()
 {
   prop_machine_name=
   prop_shared_folders=()
-  prop_nfs_config="-alldirs -mapall="$(id -u):$(id -g)
-  prop_mount_options="noacl,async"
+  #prop_nfs_config="-alldirs -mapall="$(id -u):$(id -g)
+  prop_nfs_config="all_squash"
+  prop_mount_options="vers=3,udp,noacl,async,port=20490"
+  prop_exports="/etc/exports"
   prop_force_configuration_nfs=false
 }
 
@@ -164,6 +171,9 @@ parseCli()
         prop_mount_options="${i#*=}"
       ;;
 
+      -e=*|--exports=*)
+        prop_exports="${i#*=}"
+      ;;
 
       -f|--force)
       prop_force_configuration_nfs=true
@@ -326,21 +336,30 @@ configureNFS()
     echoError "'prop_machine_ip' not set!"; exit 1;
   fi
 
-  echoWarn "\n !!! Sudo will be necessary for editing /etc/exports !!!"
+  echoWarn "\n !!! Sudo may be necessary for editing $prop_exports !!!"
 
   for shared_folder in "${prop_shared_folders[@]}"
   do
-    # Update the /etc/exports file and restart nfsd
+    # Update the exports file and restart nfsd
     (
-      echo '\n'$shared_folder' '$prop_machine_ip' '$prop_nfs_config'\n' |
-        sudo tee -a /etc/exports && awk '!a[$0]++' /etc/exports |
-        sudo tee /etc/exports
+      echo '\n'$shared_folder' '$prop_machine_ip'('$prop_nfs_config')\n' |
+        sudo tee -a $prop_exports && awk '!a[$0]++' $prop_exports |
+        sudo tee $prop_exports
     ) > /dev/null
   done
 
-  sudo nfsd restart ; sleep 2 && sudo nfsd checkexports
-
-  echoSuccess "\t\t\t\t\t\tOK"
+  NFSD=/usr/local/sbin/unfsd
+  if $NFSD -T -e $prop_exports; then
+    PID_FILE=/var/tmp/unfs3.pid
+    NFS_PID=$(cat $PID_FILE 2>/dev/null || true)
+    if [[ -n "$NFS_PID" ]]; then
+      kill $NFS_PID
+    fi
+    $NFSD -u -n 20490 -p -i $PID_FILE -e $prop_exports
+    echoSuccess "\t\t\t\t\t\tOK"
+  else
+    echoError "Invalid NFS exports file :("; exit 1
+  fi
 }
 
 # @info:    Configures the VirtualBox Docker Machine to mount nfs
