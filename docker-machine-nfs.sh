@@ -55,14 +55,17 @@ Usage: $0 <machine-name> [options]
 Options:
 
   -n, --nfs-config          NFS configuration to use in exports file.
-                              (default to '-alldirs -mapall=\$(id -u):\$(id -g)')
+                              (default to '$prop_nfs_config')
   -s, --shared-folder       Folder to share
-                              (default to /Users)
+                              (default to '$prop_shared_folders')
   -m, --mount-opts          NFS mount options
-                              (default to 'noacl,async')
+                              (default to '$prop_mount_options')
   -e, --exports             Exports file to use
-                              (default to /etc/exports)
+                              (default to '$prop_exports')
+  -p, --port                Port to use for NFS server
+                              (default to random port)
   -f, --force               Force reconfiguration of nfs
+                              (default to $prop_force_configuration_nfs)
 
 Examples:
 
@@ -131,11 +134,11 @@ isPropertyNotSet()
 # @info:    Sets the default properties
 setPropDefaults()
 {
+  prop_nfs_port="$((RANDOM%97000+3000))"
   prop_machine_name=
-  prop_shared_folders=()
-  #prop_nfs_config="-alldirs -mapall="$(id -u):$(id -g)
-  prop_nfs_config="all_squash"
-  prop_mount_options="vers=3,udp,noacl,async,port=20490"
+  prop_shared_folders=("$HOME")
+  prop_nfs_config="rw"
+  prop_mount_options="nfsvers=3,port={{PORT}},udp,nolock,hard,intr"
   prop_exports="/etc/exports"
   prop_force_configuration_nfs=false
 }
@@ -175,6 +178,10 @@ parseCli()
         prop_exports="${i#*=}"
       ;;
 
+      -p=*|--port=*)
+        prop_nfs_port="${i#*=}"
+      ;;
+
       -f|--force)
       prop_force_configuration_nfs=true
       shift
@@ -187,6 +194,7 @@ parseCli()
       ;;
     esac
   done
+  prop_mount_options=${prop_mount_options//\{\{PORT\}\}/$prop_nfs_port}
 
   if [ ${#prop_shared_folders[@]} -eq 0 ]; then
     prop_shared_folders+=("/Users")
@@ -290,7 +298,7 @@ lookupMandatoryProperties ()
     if [ "" = "${prop_nfshost_ip}" ]; then
       echoError "Could not find the xhyve net IP!"; exit 1
     fi
-    echoSuccess "OK"
+    echoSuccess "\t\tOK"
     return
   fi
 
@@ -303,7 +311,7 @@ lookupMandatoryProperties ()
       echoError "Could not find the parallels net IP!"; exit 1
     fi
 
-    echoSuccess "OK"
+    echoSuccess "\t\tOK"
     return
   fi
 
@@ -324,39 +332,39 @@ lookupMandatoryProperties ()
     echoError "Could not find the virtualbox net IP!"; exit 1
   fi
 
-  echoSuccess "OK"
+  echoSuccess "\t\tOK"
 }
 
 # @info:    Configures the NFS
 configureNFS()
 {
-  echoInfo "Configure NFS ... \n"
+  echoInfo "Configure NFS ... \t"
 
   if isPropertyNotSet $prop_machine_ip; then
     echoError "'prop_machine_ip' not set!"; exit 1;
   fi
 
-  echoWarn "\n !!! Sudo may be necessary for editing $prop_exports !!!"
-
+  touch $prop_exports
   for shared_folder in "${prop_shared_folders[@]}"
   do
     # Update the exports file and restart nfsd
     (
-      echo '\n'$shared_folder' '$prop_machine_ip'('$prop_nfs_config')\n' |
-        sudo tee -a $prop_exports && awk '!a[$0]++' $prop_exports |
-        sudo tee $prop_exports
-    ) > /dev/null
+      ( grep -v " $prop_machine_ip(" $prop_exports || true
+        echo '\n'$shared_folder' '$prop_machine_ip'('$prop_nfs_config')\n' ) |
+        awk '!a[$0]++' - | bash -c "tee $prop_exports"
+    ) >/dev/null
   done
 
-  NFSD=/usr/local/sbin/unfsd
-  if $NFSD -T -e $prop_exports; then
-    PID_FILE=/var/tmp/unfs3.pid
+  UNFSD=/usr/local/sbin/unfsd
+  if $UNFSD -T -e $prop_exports; then
+    PID_FILE=/var/tmp/$prop_machine_name-unfsd.pid
     NFS_PID=$(cat $PID_FILE 2>/dev/null || true)
     if [[ -n "$NFS_PID" ]]; then
       kill $NFS_PID
+      sleep 1
     fi
-    $NFSD -u -n 20490 -p -i $PID_FILE -e $prop_exports
-    echoSuccess "\t\t\t\t\t\tOK"
+    $UNFSD -s -u -l $prop_nfshost_ip -n $prop_nfs_port -i $PID_FILE -e $prop_exports
+    echoSuccess "\t\tOK"
   else
     echoError "Invalid NFS exports file :("; exit 1
   fi
@@ -424,7 +432,7 @@ isNFSMounted()
 {
   for shared_folder in "${prop_shared_folders[@]}"
   do
-    local nfs_mount=$(docker-machine ssh $prop_machine_name "sudo df" |
+    local nfs_mount=$(docker-machine ssh $prop_machine_name "sudo timeout -t 3 df" |
       grep "$prop_nfshost_ip:$prop_shared_folders")
     if [ "" = "$nfs_mount" ]; then
       echo "false";
