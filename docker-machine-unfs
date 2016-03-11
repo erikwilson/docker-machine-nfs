@@ -1,8 +1,7 @@
-#!/bin/sh
+#!/usr/bin/env bash
 #
 # The MIT License (MIT)
 # Copyright © 2015 Toni Van de Voorde <toni.vdv@gmail.com>
-# Copyright © 2016 Erik Wilson <erik.e.wilson@gmail.com>
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the “Software”), to deal
@@ -96,21 +95,21 @@ EOF
 # @args:    error-message
 echoError ()
 {
-  echo "\033[0;31mFAIL\n\n$1 \033[0m"
+  printf "\033[0;31mFAIL\n\n$1 \033[0m\n"
 }
 
 # @info:    Prints warning messages
 # @args:    warning-message
 echoWarn ()
 {
-  echo "\033[0;33m$1 \033[0m"
+  printf "\033[0;33m$1 \033[0m\n"
 }
 
 # @info:    Prints success messages
 # @args:    success-message
 echoSuccess ()
 {
-  echo "\033[0;32m$1 \033[0m"
+  printf "\033[0;32m$1 \033[0m\n"
 }
 
 # @info:    Prints check messages
@@ -124,7 +123,7 @@ echoInfo ()
 # @args:    property-message
 echoProperties ()
 {
-  echo "\t\033[0;35m- $1 \033[0m"
+  printf "\t\033[0;35m- $1 \033[0m\n"
 }
 
 # @info:    Checks if a given property is set
@@ -361,18 +360,18 @@ configureNFS()
   (
     for shared_folder in "${prop_shared_folders[@]}"
     do
-      echo '\n'$shared_folder' '$prop_machine_ip'('$prop_nfs_config')\n'
+      echo "$shared_folder $prop_machine_ip($prop_nfs_config)"$'\n'
     done
   ) >$prop_exports
 
-  UNFSD=/usr/local/sbin/unfsd
-  if $UNFSD -T -e $prop_exports; then
+  export PATH=$PATH:/usr/sbin:/usr/local/sbin/
+  if unfsd -T -e $prop_exports; then
     PID_FILE=/tmp/$prop_machine_name-unfsd.pid
     NFS_PID=$(cat $PID_FILE 2>/dev/null || true)
     if [[ -n "$NFS_PID" ]]; then
       kill $NFS_PID
     fi
-    $UNFSD -s -u -p -d -l $prop_nfshost_ip -n $prop_nfs_port -m $prop_nfs_port -i $PID_FILE -e $prop_exports >/dev/null &
+    nohup unfsd -s -u -p -d -l $prop_nfshost_ip -n $prop_nfs_port -m $prop_nfs_port -i $PID_FILE -e $prop_exports >/dev/null &
     echoSuccess "\t\tOK"
   else
     echoError "Invalid NFS exports file :("; exit 1
@@ -519,7 +518,8 @@ verifyNFSMount()
 # @info:    Displays the finish message
 showFinish()
 {
-  echo "\033[0;36m"
+  echo
+  printf "\033[0;36m"
   echo "--------------------------------------------"
   echo
   echo " The docker-machine '$prop_machine_name'"
@@ -528,7 +528,8 @@ showFinish()
   echo " ENJOY high speed mounts :D"
   echo
   echo "--------------------------------------------"
-  echo "\033[0m"
+  printf "\033[0m"
+  echo
 }
 
 # END _functions
