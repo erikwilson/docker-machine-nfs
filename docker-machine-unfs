@@ -2,6 +2,7 @@
 #
 # The MIT License (MIT)
 # Copyright © 2015 Toni Van de Voorde <toni.vdv@gmail.com>
+# Copyright © 2016 Erik Wilson <erik.e.wilson@gmail.com>
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the “Software”), to deal
@@ -32,11 +33,11 @@ asciiLogo ()
   echo
   echo
   echo '                       ##         .'
-  echo '                 ## ## ##        ==               _   _ _____ ____'
-  echo '              ## ## ## ## ##    ===              | \ | |  ___/ ___|'
-  echo '          /"""""""""""""""""\___/ ===            |  \| | |_  \___ \'
-  echo '     ~~~ {~~ ~~~~ ~~~ ~~~~ ~~~ ~ /  ===- ~~~     | |\  |  _|  ___) |'
-  echo '          \______ o           __/                |_| \_|_|   |____/'
+  echo '                 ## ## ##        ==            _   _ _   _ _____ ____'
+  echo '              ## ## ## ## ##    ===           | | | | \ | |  ___/ ___|'
+  echo '          /"""""""""""""""""\___/ ===         | | | |  \| | |_  \___ \'
+  echo '     ~~~ {~~ ~~~~ ~~~ ~~~~ ~~~ ~ /  ===- ~~~  | \_/ | |\  |  _|  ___) |'
+  echo '          \______ o           __/              \___/|_| \_|_|   |____/'
   echo '            \    \         __/'
   echo '             \____\_______/'
   echo
@@ -54,34 +55,36 @@ Usage: $0 <machine-name> [options]
 
 Options:
 
-  -n, --nfs-config          NFS configuration to use in exports file.
-                              (default to '$prop_nfs_config')
-  -s, --shared-folder       Folder to share
-                              (default to '$prop_shared_folders')
-  -m, --mount-opts          NFS mount options
-                              (default to '$prop_mount_options')
-  -e, --exports             Exports file to use
-                              (default to '$prop_exports')
-  -p, --port                Port to use for NFS server
-                              (default to random port)
-  -f, --force               Force reconfiguration of nfs
-                              (default to $prop_force_configuration_nfs)
+  -n, --nfs-config       NFS configuration to use in exports file.
+                          (default to '$prop_nfs_config')
+  -s, --shared-folder    Folder to share
+                          (default to '$default_shared_folder')
+  -m, --mount-opts       NFS mount options
+                          (default to '$prop_mount_options')
+  -e, --exports          Exports file to use
+                          (default to '$prop_exports')
+  -p, --port             Port to use for NFS server
+                          (default to random port)
+  -f, --force            Force reconfiguration of nfs
+                          (default to $prop_force_configuration_nfs)
+  -r, --reboot           Reboot machine instead of restarting services
+                          (default to $prop_reboot_machine)
 
 Examples:
 
-  $ docker-machine-nfs test
+  $ docker-machine-unfs test
 
-    > Configure the /Users folder with NFS
+    > Configure the HOME folder with NFS for machine test
 
-  $ docker-machine-nfs test --shared-folder=/Users --shared-folder=/var/www
+  $ docker-machine-unfs test --shared-folder=/Users --shared-folder=/var/www
 
     > Configures the /Users and /var/www folder with NFS
 
-  $ docker-machine-nfs test --shared-folder=/var/www --nfs-config="-alldirs -maproot=0"
+  $ docker-machine-unfs test --shared-folder=/var/www --nfs-config="ro"
 
-    > Configure the /var/www folder with NFS and the options '-alldirs -maproot=0'
+    > Configure the /var/www folder with NFS and the options 'ro'
 
-  $ docker-machine-nfs test --mount-opts="noacl,async,nolock,vers=3,udp,noatime,actimeo=1"
+  $ docker-machine-unfs test --mount-opts="noacl,async,nolock,vers=3,udp,noatime,actimeo=1"
 
     > Configure the /User folder with NFS and specific mount options.
 
@@ -134,13 +137,18 @@ isPropertyNotSet()
 # @info:    Sets the default properties
 setPropDefaults()
 {
-  prop_nfs_port="$((RANDOM%97000+3000))"
+  default_port_min=49152
+  default_port_max=65535
+  default_port_range=$((default_port_max-default_port_min))
+  default_shared_folder="$HOME"
+  prop_nfs_port="$((RANDOM%default_port_range+default_port_min))"
   prop_machine_name=
-  prop_shared_folders=("$HOME")
+  prop_shared_folders=()
   prop_nfs_config="rw"
-  prop_mount_options="nfsvers=3,port={{PORT}},udp,nolock,hard,intr"
-  prop_exports="/etc/exports"
+  prop_mount_options="nfsvers=3,port={{PORT}},mountport={{PORT}},udp,nolock,hard,intr"
+  prop_exports="/tmp/{{MACHINE}}.exports"
   prop_force_configuration_nfs=false
+  prop_reboot_machine=false
 }
 
 # @info:    Parses and validates the CLI arguments
@@ -155,15 +163,15 @@ parseCli()
   do
     case $i in
       -s=*|--shared-folder=*)
-      local shared_folder="${i#*=}"
-      shift
+        local shared_folder="${i#*=}"
+        shift
 
-      if [ ! -d "$shared_folder" ]; then
-        echoError "Given shared folder '$shared_folder' does not exist!"
-        exit 1
-      fi
+        if [ ! -d "$shared_folder" ]; then
+          echoError "Given shared folder '$shared_folder' does not exist!"
+          exit 1
+        fi
 
-      prop_shared_folders+=($shared_folder)
+        prop_shared_folders+=($shared_folder)
       ;;
 
       -n=*|--nfs-config=*)
@@ -183,8 +191,13 @@ parseCli()
       ;;
 
       -f|--force)
-      prop_force_configuration_nfs=true
-      shift
+        prop_force_configuration_nfs=true
+        shift
+      ;;
+
+      -r|--reboot)
+        prop_reboot_machine=true
+        shift
       ;;
 
       *)
@@ -195,9 +208,10 @@ parseCli()
     esac
   done
   prop_mount_options=${prop_mount_options//\{\{PORT\}\}/$prop_nfs_port}
+  prop_exports=${prop_exports//\{\{MACHINE\}\}/$prop_machine_name}
 
   if [ ${#prop_shared_folders[@]} -eq 0 ]; then
-    prop_shared_folders+=("/Users")
+    prop_shared_folders+=($default_shared_folder)
   fi;
 
   echoInfo "Configuration:"
@@ -215,7 +229,6 @@ parseCli()
   echoProperties "Force: $prop_force_configuration_nfs"
 
   echo #EMPTY
-
 }
 
 # @info:    Checks if the machine is present
@@ -344,26 +357,22 @@ configureNFS()
     echoError "'prop_machine_ip' not set!"; exit 1;
   fi
 
-  touch $prop_exports
-  for shared_folder in "${prop_shared_folders[@]}"
-  do
-    # Update the exports file and restart nfsd
-    (
-      ( grep -v " $prop_machine_ip(" $prop_exports || true
-        echo '\n'$shared_folder' '$prop_machine_ip'('$prop_nfs_config')\n' ) |
-        awk '!a[$0]++' - | bash -c "tee $prop_exports"
-    ) >/dev/null
-  done
+  # Update the exports file and restart nfsd
+  (
+    for shared_folder in "${prop_shared_folders[@]}"
+    do
+      echo '\n'$shared_folder' '$prop_machine_ip'('$prop_nfs_config')\n'
+    done
+  ) >$prop_exports
 
   UNFSD=/usr/local/sbin/unfsd
   if $UNFSD -T -e $prop_exports; then
-    PID_FILE=/var/tmp/$prop_machine_name-unfsd.pid
+    PID_FILE=/tmp/$prop_machine_name-unfsd.pid
     NFS_PID=$(cat $PID_FILE 2>/dev/null || true)
     if [[ -n "$NFS_PID" ]]; then
       kill $NFS_PID
-      sleep 1
     fi
-    $UNFSD -s -u -l $prop_nfshost_ip -n $prop_nfs_port -i $PID_FILE -e $prop_exports
+    $UNFSD -s -u -p -d -l $prop_nfshost_ip -n $prop_nfs_port -m $prop_nfs_port -i $PID_FILE -e $prop_exports >/dev/null &
     echoSuccess "\t\tOK"
   else
     echoError "Invalid NFS exports file :("; exit 1
@@ -385,30 +394,57 @@ configureBoot2Docker()
   # render bootlocal.sh and copy bootlocal.sh over to Docker Machine
   # (this will override an existing /var/lib/boot2docker/bootlocal.sh)
 
-  local bootlocalsh='#!/bin/sh
-  sudo umount /Users'
+  local mountsh='#!/bin/sh'$'\n'
 
   for shared_folder in "${prop_shared_folders[@]}"
   do
-    bootlocalsh="${bootlocalsh}
-    sudo mkdir -p "$shared_folder
+    mountsh+="sudo mkdir -p '$shared_folder'"$'\n'
   done
 
-  bootlocalsh="${bootlocalsh}
-  sudo /usr/local/etc/init.d/nfs-client start"
+  mountsh+="sudo /usr/local/etc/init.d/nfs-client start"$'\n'
 
   for shared_folder in "${prop_shared_folders[@]}"
   do
-    bootlocalsh="${bootlocalsh}
-    sudo mount -t nfs -o "$prop_mount_options" "$prop_nfshost_ip":"$shared_folder" "$shared_folder
+    mountsh+="sudo timeout -t 3 mount -t nfs -o '$prop_mount_options' '$prop_nfshost_ip:$shared_folder' '$shared_folder'"$'\n'
   done
 
-  local file="/var/lib/boot2docker/bootlocal.sh"
+  local mountsh_file="/var/lib/boot2docker/nfs/mount.sh"
 
   docker-machine ssh $prop_machine_name \
-    "echo '$bootlocalsh' | sudo tee $file && sudo chmod +x $file && sync" > /dev/null
+    "sudo mkdir -p '$(dirname $mountsh_file)/' && sync" >/dev/null
 
-  sleep 2
+  docker-machine ssh $prop_machine_name \
+     "echo \"$mountsh\" | sudo tee $mountsh_file && sudo chmod +x $mountsh_file && sync" >/dev/null
+
+  local umountsh='#!/bin/sh'$'\n'
+
+  for shared_folder in "${prop_shared_folders[@]}"
+  do
+    umountsh+="sudo timeout -t 3 umount -l -f '$shared_folder'"$'\n'
+  done
+
+  local umountsh_file="/var/lib/boot2docker/nfs/umount.sh"
+
+  docker-machine ssh $prop_machine_name \
+    "sudo mv -f $umountsh_file $umountsh_file.old >/dev/null 2>&1 || true && \
+     sudo mkdir -p '$(dirname $umountsh_file)' && sync" >/dev/null
+
+  docker-machine ssh $prop_machine_name \
+    "echo \"$umountsh\" | sudo tee $umountsh_file && sudo chmod +x $umountsh_file && sync" >/dev/null
+
+  local bootlocalsh_file="/var/lib/boot2docker/bootlocal.sh"
+
+  docker-machine ssh $prop_machine_name \
+    "if [[ ! -f '$bootlocalsh_file' ]]; then \
+       echo '#!/bin/sh' | sudo tee $bootlocalsh_file && sync; \
+     fi; \
+     sudo chmod a+x $bootlocalsh_file" >/dev/null
+
+  docker-machine ssh $prop_machine_name \
+    "grep -v '# docker-machine-unfs' $bootlocalsh_file | sh -c 'sudo tee $bootlocalsh_file' && sync" >/dev/null
+
+  docker-machine ssh $prop_machine_name \
+    "sudo sed '1 a\'$'\n''$mountsh_file # docker-machine-unfs' -i $bootlocalsh_file && sync" >/dev/null
 
   echoSuccess "OK"
 }
@@ -423,6 +459,23 @@ restartDockerMachine()
   fi
 
   docker-machine restart $prop_machine_name > /dev/null
+
+  echoSuccess "OK"
+}
+
+# @info:    Restarts Docker Services
+restartDockerServices()
+{
+  echoInfo "Restart Docker Services ... \t\t"
+
+  if isPropertyNotSet $prop_machine_name; then
+    echoError "'prop_machine_name' not set!"; exit 1;
+  fi
+
+  local umountsh_file="/var/lib/boot2docker/nfs/umount.sh.old"
+  local mountsh_file="/var/lib/boot2docker/nfs/mount.sh"
+  docker-machine ssh $prop_machine_name \
+    "$umountsh_file; $mountsh_file; true" >/dev/null 2>&1
 
   echoSuccess "OK"
 }
@@ -451,9 +504,9 @@ verifyNFSMount()
   local attempts=10
 
   while [ ! $attempts -eq 0 ]; do
-    sleep 1
     [ "$(isNFSMounted)" = "true" ] && break
     attempts=$(($attempts-1))
+    sleep 1
   done
 
   if [ $attempts -eq 0 ]; then
@@ -504,7 +557,12 @@ echo #EMPTY LINE
 configureNFS
 
 configureBoot2Docker
-restartDockerMachine
+
+if $prop_reboot_machine; then
+  restartDockerMachine
+else
+  restartDockerServices
+fi
 
 verifyNFSMount
 
