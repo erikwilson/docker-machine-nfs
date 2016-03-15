@@ -165,8 +165,8 @@ parseCli()
         local shared_folder="${i#*=}"
         shift
 
-        if [ ! -d "$shared_folder" ]; then
-          echoError "Given shared folder '$shared_folder' does not exist!"
+        if [ ! -d "${shared_folder%:*}" ]; then
+          echoError "Given shared folder '${shared_folder%:*}' does not exist!"
           exit 1
         fi
 
@@ -224,8 +224,8 @@ parseCli()
     if [[ "$shared_folder" != "*:*" ]]; then
       shared_folder="$shared_folder:$shared_folder"
     fi
-    echoProperties "Shared Folder: ${shared_folder#*:}"
-    echoProperties "Shared Mount: ${shared_folder%:*}"
+    echoProperties "Shared Folder: ${shared_folder%:*}"
+    echoProperties "Shared Mount: ${shared_folder#*:}"
   done
 
   echoProperties "Mount Options: $prop_mount_options"
@@ -364,9 +364,9 @@ configureNFS()
   (
     for shared_folder in "${prop_shared_folders[@]}"
     do
-      echo "${shared_folder#*:} $prop_machine_ip($prop_nfs_config)"$'\n'
+      echo "${shared_folder%:*} $prop_machine_ip($prop_nfs_config)"$'\n'
     done
-  ) >$prop_exports
+  ) | sort | uniq >$prop_exports
 
   export PATH=$PATH:/usr/sbin:/usr/local/sbin/
   if unfsd -T -e $prop_exports; then
@@ -385,7 +385,7 @@ configureNFS()
 configureRancherOS()
 {
 
-  echoInfo "Configure Docker Machine for RancherOS ... \t\t"
+  echoInfo "Configuring for RancherOS ... \t\t"
   if isPropertyNotSet $prop_machine_name; then
     echoError "'prop_machine_name' not set!"; exit 1;
   fi
@@ -396,13 +396,13 @@ configureRancherOS()
   local mountshdir=''
   for shared_folder in "${prop_shared_folders[@]}"
   do
-    mountshsir+="sudo mkdir -p '${shared_folder%:*}'"$'\n'
+    mountshdir+="      sudo mkdir -p '${shared_folder#*:}'"$'\n'
   done
 
   local mountsh=''
   for shared_folder in "${prop_shared_folders[@]}"
   do
-    mountsh+="timeout -t 3 mount -t nfs -o '$prop_mount_options' '$prop_nfshost_ip:${shared_folder#*:}' '${shared_folder%:*}'"$'\n'
+    mountsh+="      mount -t nfs -o '$prop_mount_options' '$prop_nfshost_ip:${shared_folder%:*}' '${shared_folder#*:}'"$'\n'
   done
 
 cloud_config_tmp_path="$(mktemp)"
@@ -424,12 +424,12 @@ write_files:
         apt-get update -qq && apt-get install -y nfs-common
       fi
       rpcbind
-      $mountshdir
-      $mountsh
+$(echo -e "$mountshdir" | uniq)
+$(echo -e "$mountsh" | uniq)
 CLOUD_CONFIG
-  
-     docker-machine scp $cloud_config_tmp_path $prop_machine_name:/tmp/nfs.sh >/dev/null 2>&1
-     docker-machine ssh $prop_machine_name 'sudo ros config merge < /tmp/nfs.sh' >/dev/null 2>&1
+
+     docker-machine scp $cloud_config_tmp_path $prop_machine_name:/tmp/nfs.sh #>/dev/null 2>&1
+     docker-machine ssh $prop_machine_name 'sudo ros config merge < /tmp/nfs.sh; sync; sync' #>/dev/null 2>&1
      echoSuccess "OK"
 }
 
@@ -439,7 +439,7 @@ configureBoot2Docker()
   # render bootlocal.sh and nfs/*mount.sh over to Docker Machine
   # (this will modify an existing /var/lib/boot2docker/bootlocal.sh)
 
-  echoInfo "Configure Docker Machine for Boot2Docker ... \t\t"
+  echoInfo "Configuring for Boot2Docker ... \t\t"
 
   if isPropertyNotSet $prop_machine_name; then
     echoError "'prop_machine_name' not set!"; exit 1;
@@ -466,7 +466,7 @@ configureBoot2Docker()
 
   for shared_folder in "${prop_shared_folders[@]}"
   do
-    umountsh+="sudo timeout -t 3 umount -l -f '${shared_folder%:*}'"$'\n'
+    umountsh+="sudo timeout -t 3 umount -l -f '${shared_folder#*:}'"$'\n'
   done
 
   local mountsh_file="/var/lib/boot2docker/nfs/mount.sh"
@@ -503,7 +503,6 @@ restartDockerMachine()
 
   docker-machine restart $prop_machine_name > /dev/null
 
-  exit 1
   echoSuccess "OK"
 }
 
@@ -529,8 +528,8 @@ isNFSMounted()
 {
   for shared_folder in "${prop_shared_folders[@]}"
   do
-    local nfs_mount=$(docker-machine ssh $prop_machine_name "sudo timeout -t 3 df" |
-      grep "$prop_nfshost_ip:${shared_folder#*:}")
+    local nfs_mount=$(docker-machine ssh $prop_machine_name "sudo df" |
+      grep "$prop_nfshost_ip:${shared_folder%:*}")
     if [ "" = "$nfs_mount" ]; then
       echo "false";
       return;
@@ -603,12 +602,12 @@ echo #EMPTY LINE
 configureNFS
 
 # XXX
-$which_b2d_style_install=''
+which_b2d_style_install=''
 
-if docker-machine ssh $prop_machine_name sudo ros -v; then
-  $which_b2d_style_install='rancheros'
+if docker-machine ssh $prop_machine_name sudo ros -v 2>/dev/null; then
+  which_b2d_style_install='rancheros'
 else
-  $which_b2d_style_install='boot2docker'
+  which_b2d_style_install='boot2docker'
 fi
 
 case "$which_b2d_style_install" in
